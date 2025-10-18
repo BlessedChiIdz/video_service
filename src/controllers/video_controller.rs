@@ -10,7 +10,7 @@ pub struct VideoStreamer;
 
 impl VideoStreamer {
     async fn stream_file(
-        mut file_path: PathBuf,
+         file_path: PathBuf,
     ) -> Result<Response, std::io::Error> {
         let file = File::open(file_path).await?;
         let metadata = file.metadata().await?;
