@@ -2,3 +2,4 @@
 /apache
 /videos
 /.env
+/Cargo.lock
