@@ -1,1 +1,1 @@
-pub mod routes_paths;
+pub mod main_routes;

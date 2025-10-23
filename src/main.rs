@@ -1,12 +1,14 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV6};
+use axum::extract::DefaultBodyLimit;
+use axum::http::{HeaderValue, Method};
 use axum::Router;
-use axum::routing::get;
+use axum::routing::{get, post};
 use sqlx::postgres::PgPoolOptions;
 use tracing::error;
 use tracing::log::info;
-use crate::routes::routes_paths::AppRoute;
+use crate::routes::main_routes::AppRoute;
 use tracing_subscriber;
-use crate::controllers::video_controller::{stream_video};
+use crate::controllers::video_controller::{stream_video, upload_video_chunked};
 mod routes;
 mod controllers;
 mod helpers;
@@ -14,8 +16,15 @@ mod db;
 
 use dotenv::dotenv;
 use serde::de::Unexpected::Str;
+use sqlx::{PgPool, Pool, Postgres};
 use crate::helpers::env_helper;
 use strum::IntoEnumIterator;
+use tower_http::cors::CorsLayer;
+
+#[derive(Clone)]
+struct AppState {
+    pool: PgPool
+}
 
 #[tokio::main]
 async fn main() {
@@ -30,12 +39,22 @@ async fn main() {
     dotenv::from_filename(env_file_name).expect("No .env file in directory proj");
     dotenv().ok();
 
+    let cors = CorsLayer::new()
+        .allow_origin("http://localhost:3000".parse::<HeaderValue>().unwrap())
+        .allow_methods([Method::GET, Method::POST]);
+
     // connect базы
-    set_db_connection().await;
+    let pool = set_db_connection().await;
+    let state = AppState { pool };
+    run_migrations(&state.pool).await.expect("DB migration err");
     // старт приложения
     let app = Router::new()
         .route("/", get(hp_root))
-        .route(AppRoute::path(&AppRoute::Video), get(stream_video));
+        .route(&AppRoute::path(&AppRoute::VideoGet), get(stream_video))
+        .route(&AppRoute::path(&AppRoute::VideoUpload), post(upload_video_chunked))
+        // лимит в 250 мб
+        .layer(DefaultBodyLimit::max(1024*1024*250))
+        .layer(cors);
     let key_env: &str = "APP_PORT";
     let port: u16 = env_helper::read_env(key_env);
 
@@ -51,7 +70,7 @@ async fn main() {
 
 }
 
-async fn set_db_connection() {
+async fn set_db_connection() -> Pool<Postgres> {
     info!("Try connect to db");
     let pg_port_env: &str = "PG_PORT";
     let port:u16 = env_helper::read_env(pg_port_env);
@@ -71,9 +90,25 @@ async fn set_db_connection() {
         .connect(&connection_string).await;
     // секунд 20 пытается подключится при первичном запуске проекта если базы нет
     match pool {
-        Ok(..)=>{info!("DB Connected")}
+        Ok(pl)=>{
+            info!("DB Connected");
+            pl
+        }
         // если не получилось законнектится паникуем
         Err(..) => {panic!("errWithDBConnection")}
+    }
+}
+
+async fn run_migrations(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    match sqlx::migrate!("./migrations").run(pool).await {
+        Ok(_) => {
+            info!("✅ Migrations applied successfully");
+            Ok(())
+        }
+        Err(e) => {
+            error!("❌ Failed to run migrations: {}", e);
+            Err(Box::new(e))
+        }
     }
 }
 
